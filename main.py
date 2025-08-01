@@ -1,12 +1,11 @@
 import os
-from flask import Flask, request, jsonify
-import openai
-import requests
 import re
+import requests
+from flask import Flask, request, jsonify
+from openai import OpenAI
 
 app = Flask(__name__)
-
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 ZAPIER_WEBHOOK_URL = os.environ.get("ZAPIER_WEBHOOK_URL")
 
 @app.route("/")
@@ -25,8 +24,8 @@ def webhook():
     user_task = message[len("Добавь задачу:"):].strip()
     print("Задача пользователя:", user_task)
 
-    # Получение ответа от OpenAI
-    response = openai.ChatCompletion.create(
+    # Новый синтаксис вызова ChatCompletion
+    chat_response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{
             "role": "user",
@@ -34,16 +33,16 @@ def webhook():
                        f"Название:, Описание:, Срок:, Метки:"
         }]
     )
-    reply = response.choices[0].message["content"]
+
+    reply = chat_response.choices[0].message.content
     print("Ответ от OpenAI:", reply)
 
-    # Парсим ответ по ключевым словам
+    # Парсинг
     title = re.search(r"Название:\s*(.*)", reply)
     description = re.search(r"Описание:\s*(.*)", reply)
     due = re.search(r"Срок:\s*(.*)", reply)
     labels = re.search(r"Метки:\s*(.*)", reply)
 
-    # Подготавливаем поля для отправки
     payload = {
         "title": title.group(1).strip() if title else "",
         "description": description.group(1).strip() if description else "",
