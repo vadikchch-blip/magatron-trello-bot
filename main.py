@@ -1,10 +1,12 @@
 import os
 from flask import Flask, request, jsonify
-from openai import OpenAI
+import openai
+import requests
 
 app = Flask(__name__)
 
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+ZAPIER_WEBHOOK_URL = os.environ.get("ZAPIER_WEBHOOK_URL")  # <-- задаётся в Railway или .env
 
 @app.route("/")
 def hello():
@@ -20,17 +22,23 @@ def webhook():
         user_task = message[len("Добавь задачу:"):].strip()
         print("Задача пользователя:", user_task)
 
-        try:
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": f"Добавь в Trello задачу: {user_task}"}]
-            )
-            reply = response.choices[0].message.content
-            print("Ответ от OpenAI:", reply)
-            return jsonify({"status": "ok", "reply": reply})
-        except Exception as e:
-            print("Ошибка:", str(e))
-            return jsonify({"status": "error", "message": str(e)})
+        # Получаем от ChatGPT структуру задачи
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{
+                "role": "user",
+                "content": f"Сформируй задачу для Trello на основе: {user_task}. Формат: название, описание, срок, метки."
+            }]
+        )
+
+        reply = response.choices[0].message["content"]
+        print("Ответ от OpenAI:", reply)
+
+        # Отправляем в Zapier
+        zapier_response = requests.post(ZAPIER_WEBHOOK_URL, json={"task": reply})
+        print("Отправка в Zapier:", zapier_response.status_code)
+
+        return jsonify({"status": "ok", "reply": reply})
     
     return jsonify({"status": "ignored", "message": "Не задача"})
 
