@@ -1,8 +1,8 @@
 import os
-import json
 from flask import Flask, request, jsonify
 import openai
 import requests
+import re
 
 app = Flask(__name__)
 
@@ -16,47 +16,46 @@ def hello():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    message = data.get("message", {}).get("text", "")
+    message = data["message"]["text"]
     print("Получено сообщение:", message)
 
-    if message.startswith("Добавь задачу:"):
-        user_task = message[len("Добавь задачу:"):].strip()
-        print("Задача пользователя:", user_task)
+    if not message.startswith("Добавь задачу:"):
+        return jsonify({"status": "ignored", "message": "Не задача"})
 
-        try:
-            # Запрос к OpenAI с ожиданием ответа в JSON-формате
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{
-                    "role": "user",
-                    "content": f"""
-Сформируй задачу для Trello на основе: "{user_task}". 
-Ответ строго в JSON с полями:
-- title: строка
-- description: строка
-- due: дата в формате YYYY-MM-DD
-- labels: список строк
-"""
-                }],
-                response_format="json"
-            )
+    user_task = message[len("Добавь задачу:"):].strip()
+    print("Задача пользователя:", user_task)
 
-            reply = response.choices[0].message["content"]
-            print("Ответ от OpenAI:", reply)
+    # Получение ответа от OpenAI
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{
+            "role": "user",
+            "content": f"Сформируй задачу для Trello на основе: {user_task}. Формат: "
+                       f"Название:, Описание:, Срок:, Метки:"
+        }]
+    )
+    reply = response.choices[0].message["content"]
+    print("Ответ от OpenAI:", reply)
 
-            task_data = json.loads(reply)
+    # Парсим ответ по ключевым словам
+    title = re.search(r"Название:\s*(.*)", reply)
+    description = re.search(r"Описание:\s*(.*)", reply)
+    due = re.search(r"Срок:\s*(.*)", reply)
+    labels = re.search(r"Метки:\s*(.*)", reply)
 
-            # Отправка в Zapier
-            zapier_response = requests.post(ZAPIER_WEBHOOK_URL, json=task_data)
-            print("Отправка в Zapier:", zapier_response.status_code)
+    # Подготавливаем поля для отправки
+    payload = {
+        "title": title.group(1).strip() if title else "",
+        "description": description.group(1).strip() if description else "",
+        "due": due.group(1).strip() if due else "",
+        "labels": labels.group(1).strip() if labels else ""
+    }
 
-            return jsonify({"status": "ok", "reply": task_data})
+    print("Payload в Zapier:", payload)
+    zapier_response = requests.post(ZAPIER_WEBHOOK_URL, json=payload)
+    print("Отправка в Zapier:", zapier_response.status_code)
 
-        except Exception as e:
-            print("Ошибка:", str(e))
-            return jsonify({"status": "error", "message": str(e)}), 500
-
-    return jsonify({"status": "ignored", "message": "Не задача"})
+    return jsonify({"status": "ok", "reply": reply, "parsed": payload})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
