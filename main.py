@@ -38,7 +38,6 @@ def parse_due_date(text):
 
 def send_message(chat_id, text):
     try:
-        print(f"💬 Отправка в Telegram chat_id={chat_id}")
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         response = requests.post(url, json={"chat_id": chat_id, "text": text})
         print(f"📨 Ответ Telegram: {response.status_code} - {response.text}")
