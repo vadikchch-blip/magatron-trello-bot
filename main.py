@@ -84,6 +84,3 @@ def webhook():
         print(f"❌ Общая ошибка: {e}")
         send_message(chat_id, f"❌ Ошибка обработки сообщения: {e}")
     return "ok"
-
-# ❗️ЭТО НУЖНО ДЛЯ GUNICORN — оставить в конце:
-app = app
