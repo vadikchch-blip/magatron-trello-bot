@@ -3,10 +3,10 @@ import json
 import requests
 from flask import Flask, request
 from datetime import datetime, timedelta
-import openai
+from openai import OpenAI
 
-# ⛽ Настройка API-ключа по-старому
-openai.api_key = os.environ["OPENAI_API_KEY"]
+# 🤖 Новый клиент OpenAI (теперь правильно!)
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 app = Flask(__name__)
 
@@ -19,7 +19,7 @@ def ask_gpt_to_parse_task(text):
         "Ответ возвращай строго в JSON с полями: title (строка), description (строка), due_date (строка в ISO 8601 или null), labels (список строк)."
     )
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -28,7 +28,7 @@ def ask_gpt_to_parse_task(text):
         temperature=0.2,
     )
 
-    return response["choices"][0]["message"]["content"]
+    return response.choices[0].message.content
 
 def parse_due_date(text):
     if "завтра" in text.lower():
