@@ -53,6 +53,10 @@ def webhook():
 
         gpt_response = ask_gpt_to_parse_task(message)
 
+        # Отправляем в Telegram сырой ответ от GPT
+        print("GPT RAW RESPONSE:", gpt_response)
+        send_message(chat_id, f"🧠 GPT ответ:\n{gpt_response}")
+
         try:
             parsed = json.loads(gpt_response)
         except Exception as e:
