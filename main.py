@@ -5,9 +5,11 @@ from flask import Flask, request
 from datetime import datetime, timedelta
 import openai
 
+# 🔧 Новый клиент OpenAI
+client = openai.OpenAI()
+
 app = Flask(__name__)
 
-openai.api_key = os.environ["OPENAI_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 
@@ -17,7 +19,7 @@ def ask_gpt_to_parse_task(text):
         "Ответ возвращай строго в JSON с полями: title (строка), description (строка), due_date (строка в ISO 8601 или null), labels (список строк)."
     )
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -26,7 +28,7 @@ def ask_gpt_to_parse_task(text):
         temperature=0.2,
     )
 
-    return response["choices"][0]["message"]["content"]
+    return response.choices[0].message.content
 
 def parse_due_date(text):
     if "завтра" in text.lower():
@@ -38,6 +40,7 @@ def parse_due_date(text):
 
 def send_message(chat_id, text):
     try:
+        print(f"💬 Отправка в Telegram chat_id={chat_id}")
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         response = requests.post(url, json={"chat_id": chat_id, "text": text})
         print(f"📨 Ответ Telegram: {response.status_code} - {response.text}")
@@ -55,7 +58,7 @@ def webhook():
     try:
         message = data["message"]["text"]
         chat_id = data["message"]["chat"]["id"]
-        print(f"📩 Получено сообщение: {message}")
+        print(f"📩 Получено сообщение: {message} от chat_id={chat_id}")
 
         gpt_response = ask_gpt_to_parse_task(message)
         print(f"🤖 Ответ GPT: {gpt_response}")
@@ -82,5 +85,9 @@ def webhook():
 
     except Exception as e:
         print(f"❌ Общая ошибка: {e}")
-        send_message(chat_id, f"❌ Ошибка обработки сообщения: {e}")
+        return "ok"
+
     return "ok"
+
+if __name__ == "__main__":
+    app.run(port=8080)
