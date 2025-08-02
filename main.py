@@ -5,21 +5,19 @@ from flask import Flask, request
 from datetime import datetime, timedelta
 import openai
 
-# 🔧 Новый клиент OpenAI
-client = openai.OpenAI()
-
 app = Flask(__name__)
 
+openai.api_key = os.environ["OPENAI_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 
 def ask_gpt_to_parse_task(text):
     system_prompt = (
         "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
-        "Ответ возвращай строго в JSON с полями: title (строка), description (строка в ISO 8601 или null), labels (список строк)."
+        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), due_date (строка в ISO 8601 или null), labels (список строк)."
     )
 
-    response = client.chat.completions.create(
+    response = openai.ChatCompletion.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -28,7 +26,7 @@ def ask_gpt_to_parse_task(text):
         temperature=0.2,
     )
 
-    return response.choices[0].message.content
+    return response["choices"][0]["message"]["content"]
 
 def parse_due_date(text):
     if "завтра" in text.lower():
@@ -85,13 +83,8 @@ def webhook():
 
     except Exception as e:
         print(f"❌ Общая ошибка: {e}")
-        return "ok"
-
+        send_message(chat_id, f"❌ Ошибка обработки сообщения: {e}")
     return "ok"
 
-# ✅ Добавлено, чтобы gunicorn знал, что такое app
-app = app
-
-# 🔧 Это нужно для локального запуска, но не используется в Railway
 if __name__ == "__main__":
     app.run(port=8080)
