@@ -3,13 +3,11 @@ import json
 import requests
 from flask import Flask, request
 from datetime import datetime, timedelta
-import openai
-
-# Инициализируем OpenAI-клиент новым способом
-client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+from openai import OpenAI
 
 app = Flask(__name__)
 
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 
@@ -35,12 +33,10 @@ def parse_due_date(text):
         return (datetime.now() + timedelta(days=1)).isoformat()
     elif "сегодня" in text.lower():
         return datetime.now().isoformat()
-    else:
-        return None
+    return None
 
 def send_message(chat_id, text):
     try:
-        print(f"💬 Отправка в Telegram chat_id={chat_id}")
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         response = requests.post(url, json={"chat_id": chat_id, "text": text})
         print(f"📨 Ответ Telegram: {response.status_code} - {response.text}")
@@ -66,26 +62,22 @@ def webhook():
         try:
             parsed = json.loads(gpt_response)
         except Exception as e:
-            print(f"❌ Ошибка парсинга JSON: {e}")
-            send_message(chat_id, f"❌ Ошибка парсинга ответа от GPT:\n{e}\n{gpt_response}")
+            send_message(chat_id, f"❌ Ошибка парсинга JSON:\n{e}\n{gpt_response}")
             return "ok"
 
-        if not parsed or not parsed.get("title"):
-            print("⚠️ Не удалось распознать задачу")
-            send_message(chat_id, "Не удалось распознать задачу. Попробуй переформулировать.")
+        if not parsed.get("title"):
+            send_message(chat_id, "⚠️ Не удалось распознать задачу. Попробуй переформулировать.")
             return "ok"
 
         if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
 
-        print(f"📤 Отправка в Zapier: {parsed}")
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
-
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
 
     except Exception as e:
         print(f"❌ Общая ошибка: {e}")
-        send_message(chat_id, f"❌ Ошибка обработки сообщения: {e}")
+        send_message(chat_id, f"❌ Ошибка обработки: {e}")
 
     return "ok"
 
