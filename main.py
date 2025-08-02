@@ -1,60 +1,74 @@
 import os
-import re
+import openai
+from flask import Flask, request
 import requests
-from flask import Flask, request, jsonify
-from openai import OpenAI
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-ZAPIER_WEBHOOK_URL = os.environ.get("ZAPIER_WEBHOOK_URL")
 
-@app.route("/")
-def hello():
-    return "Magatron is running!"
+# Настройки из переменных окружения
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ZAPIER_WEBHOOK_URL = os.getenv("ZAPIER_WEBHOOK_URL")
+
+openai.api_key = OPENAI_API_KEY
+
+def parse_due_date(text):
+    today = datetime.today()
+    if "сегодня" in text.lower():
+        return today.strftime("%Y-%m-%d")
+    elif "завтра" in text.lower():
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    return None
+
+def ask_gpt_to_parse_task(message):
+    prompt = f"""
+Ты помощник, который парсит задачи из сообщений пользователя.
+Ответь в формате JSON с полями:
+- title — короткое название задачи,
+- description — подробности (если есть),
+- due_date — дата дедлайна (если указано: "сегодня", "завтра" и т.д., переведи в формат ГГГГ-ММ-ДД, иначе null),
+- labels — массив меток, если встречаются.
+
+Сообщение: "{message}"
+"""
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3
+    )
+    return response.choices[0].message.content.strip()
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     message = data["message"]["text"]
-    print("Получено сообщение:", message)
+    chat_id = data["message"]["chat"]["id"]
 
-    if not message.startswith("Добавь задачу:"):
-        return jsonify({"status": "ignored", "message": "Не задача"})
+    # Обработка
+    try:
+        gpt_response = ask_gpt_to_parse_task(message)
+        parsed = eval(gpt_response) if gpt_response.startswith("{") else {}
 
-    user_task = message[len("Добавь задачу:"):].strip()
-    print("Задача пользователя:", user_task)
+        if not parsed or not parsed.get("title"):
+            send_message(chat_id, "Не удалось распознать задачу. Попробуй переформулировать.")
+            return "ok"
 
-    # Новый синтаксис вызова ChatCompletion
-    chat_response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{
-            "role": "user",
-            "content": f"Сформируй задачу для Trello на основе: {user_task}. Формат: "
-                       f"Название:, Описание:, Срок:, Метки:"
-        }]
-    )
+        # Подставим дедлайн, если GPT не распознал
+        if not parsed.get("due_date"):
+            parsed["due_date"] = parse_due_date(message)
 
-    reply = chat_response.choices[0].message.content
-    print("Ответ от OpenAI:", reply)
+        # Отправка в Zapier
+        requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
 
-    # Парсинг
-    title = re.search(r"Название:\s*(.*)", reply)
-    description = re.search(r"Описание:\s*(.*)", reply)
-    due = re.search(r"Срок:\s*(.*)", reply)
-    labels = re.search(r"Метки:\s*(.*)", reply)
+        send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
+    except Exception as e:
+        send_message(chat_id, f"❌ Ошибка обработки: {e}")
+    return "ok"
 
-    payload = {
-        "title": title.group(1).strip() if title else "",
-        "description": description.group(1).strip() if description else "",
-        "due": due.group(1).strip() if due else "",
-        "labels": labels.group(1).strip() if labels else ""
-    }
-
-    print("Payload в Zapier:", payload)
-    zapier_response = requests.post(ZAPIER_WEBHOOK_URL, json=payload)
-    print("Отправка в Zapier:", zapier_response.status_code)
-
-    return jsonify({"status": "ok", "reply": reply, "parsed": payload})
+def send_message(chat_id, text):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run()
