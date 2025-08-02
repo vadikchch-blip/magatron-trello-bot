@@ -9,6 +9,7 @@ app = Flask(__name__)
 # Настройки из переменных окружения
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ZAPIER_WEBHOOK_URL = os.getenv("ZAPIER_WEBHOOK_URL")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -44,7 +45,6 @@ def webhook():
     message = data["message"]["text"]
     chat_id = data["message"]["chat"]["id"]
 
-    # Обработка
     try:
         gpt_response = ask_gpt_to_parse_task(message)
         parsed = eval(gpt_response) if gpt_response.startswith("{") else {}
@@ -53,11 +53,9 @@ def webhook():
             send_message(chat_id, "Не удалось распознать задачу. Попробуй переформулировать.")
             return "ok"
 
-        # Подставим дедлайн, если GPT не распознал
         if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
 
-        # Отправка в Zapier
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
 
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
@@ -66,9 +64,9 @@ def webhook():
     return "ok"
 
 def send_message(chat_id, text):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": chat_id, "text": text})
 
 if __name__ == "__main__":
-    app.run()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
