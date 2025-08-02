@@ -52,10 +52,7 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
-
-        # Отправляем в Telegram сырой ответ от GPT
-        print("GPT RAW RESPONSE:", gpt_response)
-        send_message(chat_id, f"🧠 GPT ответ:\n{gpt_response}")
+        send_message(chat_id, f"🤖 GPT RAW RESPONSE:\n{gpt_response}")
 
         try:
             parsed = json.loads(gpt_response)
@@ -70,8 +67,8 @@ def webhook():
         if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
 
-        requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
-        send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
+        zapier_response = requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
+        send_message(chat_id, f"📡 Отправлено в Zapier (код {zapier_response.status_code})\n✅ Задача: {parsed['title']}")
 
     except Exception as e:
         send_message(chat_id, f"❌ Ошибка: {e}")
