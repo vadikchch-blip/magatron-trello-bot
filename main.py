@@ -85,5 +85,5 @@ def webhook():
         send_message(chat_id, f"❌ Ошибка обработки сообщения: {e}")
     return "ok"
 
-if __name__ == "__main__":
-    app.run(port=8080)
+# ❗️ЭТО НУЖНО ДЛЯ GUNICORN — оставить в конце:
+app = app
