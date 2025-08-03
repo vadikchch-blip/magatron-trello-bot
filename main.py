@@ -2,8 +2,9 @@ import os
 import json
 import requests
 from flask import Flask, request
-from datetime import datetime, timedelta
+from datetime import datetime
 import openai
+import dateparser
 
 openai.api_key = os.environ["OPENAI_API_KEY"]
 app = Flask(__name__)
@@ -26,26 +27,13 @@ def ask_gpt_to_parse_task(text):
     )
     return response["choices"][0]["message"]["content"]
 
-def parse_due_date(text, gpt_date):
-    now = datetime.now()
-    
-    # 1. Если GPT прислал дату — парсим её
-    if gpt_date:
-        try:
-            parsed = datetime.fromisoformat(gpt_date)
-            if parsed >= now:
-                return parsed.isoformat()
-        except Exception:
-            pass  # если формат неправильный — идём дальше
-
-    # 2. Если дата не пришла или слишком старая — подменяем на "сегодня" или "завтра"
-    text_lower = text.lower()
-    if "завтра" in text_lower:
-        return (now + timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
-    if "сегодня" in text_lower:
-        return now.replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
-
-    # 3. Если ничего не подходит
+def parse_due_date(text):
+    parsed_date = dateparser.parse(
+        text,
+        settings={'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'Europe/Moscow', 'RETURN_AS_TIMEZONE_AWARE': False}
+    )
+    if parsed_date:
+        return parsed_date.isoformat()
     return None
 
 def send_message(chat_id, text):
@@ -78,7 +66,8 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        parsed["due_date"] = parse_due_date(message, parsed.get("due_date"))
+        if not parsed.get("due_date"):
+            parsed["due_date"] = parse_due_date(message)
 
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
