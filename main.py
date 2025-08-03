@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from openai import OpenAI
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
 app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -14,8 +15,10 @@ ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 def ask_gpt_to_parse_task(text):
     system_prompt = (
         "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
-        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), due_date (строка в ISO 8601 или null), labels (список строк)."
+        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), "
+        "due_date (строка в ISO 8601 или null), labels (список строк)."
     )
+
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
@@ -24,6 +27,7 @@ def ask_gpt_to_parse_task(text):
         ],
         temperature=0.2,
     )
+
     return response.choices[0].message.content
 
 def parse_due_date(text):
@@ -38,7 +42,7 @@ def send_message(chat_id, text):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text})
     except Exception as e:
-        print(f"Ошибка Telegram: {e}")
+        print(f"Ошибка отправки в Telegram: {e}")
 
 @app.route("/", methods=["GET"])
 def index():
@@ -70,7 +74,7 @@ def webhook():
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
 
     except Exception as e:
-        send_message(chat_id, f"❌ Ошибка: {e}")
+        send_message(chat_id, f"❌ Ошибка обработки: {e}")
     return "ok"
 
 if __name__ == "__main__":
