@@ -11,12 +11,14 @@ ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
-    if "message" in data and "text" in data["message"]:
-        text = data["message"]["text"]
-        # Отправляем просто текст задачи в Zapier, без парсинга
-        requests.post(ZAPIER_WEBHOOK_URL, json={"raw": text})
+    text = data.get("message", {}).get("text", "")
+    if text:
+        try:
+            requests.post(ZAPIER_WEBHOOK_URL, json={"raw": text})
+        except Exception as e:
+            print(f"Error sending to Zapier: {e}")
     return {"ok": True}
 
 @app.route('/')
-def root():
-    return 'Magatron is alive.'
+def index():
+    return "Magatron is alive."
