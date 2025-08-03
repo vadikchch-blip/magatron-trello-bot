@@ -27,10 +27,22 @@ def ask_gpt_to_parse_task(text):
     return response["choices"][0]["message"]["content"]
 
 def parse_due_date(text):
-    if "завтра" in text.lower():
-        return (datetime.now() + timedelta(days=1)).isoformat()
-    elif "сегодня" in text.lower():
-        return datetime.now().isoformat()
+    text = text.lower()
+    now = datetime.now()
+
+    if "завтра" in text:
+        return (now + timedelta(days=1)).isoformat()
+    elif "сегодня" in text:
+        return now.isoformat()
+    elif "через неделю" in text:
+        return (now + timedelta(weeks=1)).isoformat()
+    elif "в понедельник" in text:
+        # пример: ближайший понедельник
+        days_ahead = (0 - now.weekday() + 7) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return (now + timedelta(days=days_ahead)).isoformat()
+
     return None
 
 def send_message(chat_id, text):
@@ -63,7 +75,8 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        if not parsed.get("due_date"):
+        # ✅ Обновлённая проверка due_date
+        if not parsed.get("due_date") or parsed["due_date"] in ["", "null", None]:
             parsed["due_date"] = parse_due_date(message)
 
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
