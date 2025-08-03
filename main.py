@@ -1,24 +1,77 @@
 import os
-import openai
+import json
 import requests
 from flask import Flask, request
-
-app = Flask(__name__)
+from datetime import datetime, timedelta
+import openai
 
 openai.api_key = os.environ["OPENAI_API_KEY"]
+app = Flask(__name__)
+
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 
-@app.route('/webhook', methods=['POST'])
+def ask_gpt_to_parse_task(text):
+    system_prompt = (
+        "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
+        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), due_date (строка в ISO 8601 или null), labels (список строк)."
+    )
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ],
+        temperature=0.2,
+    )
+    return response["choices"][0]["message"]["content"]
+
+def parse_due_date(text):
+    if "завтра" in text.lower():
+        return (datetime.now() + timedelta(days=1)).isoformat()
+    elif "сегодня" in text.lower():
+        return datetime.now().isoformat()
+    return None
+
+def send_message(chat_id, text):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": chat_id, "text": text})
+    except Exception as e:
+        print(f"Ошибка Telegram: {e}")
+
+@app.route("/", methods=["GET"])
+def index():
+    return "OK"
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    text = data.get("message", {}).get("text", "")
-    if text:
-        try:
-            requests.post(ZAPIER_WEBHOOK_URL, json={"raw": text})
-        except Exception as e:
-            print(f"Error sending to Zapier: {e}")
-    return {"ok": True}
+    try:
+        message = data["message"]["text"]
+        chat_id = data["message"]["chat"]["id"]
 
-@app.route('/')
-def index():
-    return "Magatron is alive."
+        gpt_response = ask_gpt_to_parse_task(message)
+
+        try:
+            parsed = json.loads(gpt_response)
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка парсинга JSON: {e}\n{gpt_response}")
+            return "ok"
+
+        if not parsed.get("title"):
+            send_message(chat_id, "⚠️ Не удалось распознать задачу")
+            return "ok"
+
+        if not parsed.get("due_date"):
+            parsed["due_date"] = parse_due_date(message)
+
+        requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
+        send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
+
+    except Exception as e:
+        send_message(chat_id, f"❌ Ошибка: {e}")
+    return "ok"
+
+if __name__ == "__main__":
+    app.run(port=8080)
