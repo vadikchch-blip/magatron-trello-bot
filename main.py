@@ -2,29 +2,33 @@ import os
 import openai
 import requests
 from flask import Flask, request
+from openai import OpenAI
 
 app = Flask(__name__)
 
-openai.api_key = os.environ["OPENAI_API_KEY"]
+# Инициализация клиента OpenAI
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 
 def parse_task(text):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{
-            "role": "system",
-            "content": "Ты парсер задач. Принимаешь текст, возвращаешь JSON с ключами: title, description, due_date, labels."
-        }, {
-            "role": "user",
-            "content": text
-        }]
+    print("🔍 Отправка текста в OpenAI:", text)
+    response = client.chat.completions.create(
+        model="gpt-4o",  # Можно заменить через переменную среды
+        messages=[
+            {"role": "system", "content": "Ты парсер задач. Принимаешь текст, возвращаешь JSON с ключами: title, description, due_date, labels."},
+            {"role": "user", "content": text}
+        ]
     )
-    return response["choices"][0]["message"]["content"]
+    content = response.choices[0].message.content
+    print("✅ Ответ от OpenAI:", content)
+    return content
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
+    print("📩 Получен запрос от Telegram:", data)
 
     if "message" in data and "text" in data["message"]:
         chat_id = data["message"]["chat"]["id"]
@@ -36,7 +40,8 @@ def webhook():
                 requests.post(ZAPIER_WEBHOOK_URL, json={"raw": text, "parsed": parsed})
                 send_telegram_message(chat_id, "✅ Задача отправлена в Trello")
             except Exception as e:
-                send_telegram_message(chat_id, f"⚠️ Ошибка при обработке задачи: {e}")
+                print("❌ Ошибка при разборе:", e)
+                send_telegram_message(chat_id, f"⚠️ Ошибка: {e}")
         else:
             send_telegram_message(chat_id, "👋 Привет! Напиши 'Добавь задачу: ...'")
 
