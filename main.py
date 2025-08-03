@@ -3,9 +3,9 @@ import json
 import requests
 from flask import Flask, request
 from datetime import datetime, timedelta
-import openai
+from openai import OpenAI
 
-openai.api_key = os.environ["OPENAI_API_KEY"]
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -16,7 +16,7 @@ def ask_gpt_to_parse_task(text):
         "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
         "Ответ возвращай строго в JSON с полями: title (строка), description (строка), due_date (строка в ISO 8601 или null), labels (список строк)."
     )
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -24,7 +24,7 @@ def ask_gpt_to_parse_task(text):
         ],
         temperature=0.2,
     )
-    return response["choices"][0]["message"]["content"]
+    return response.choices[0].message.content
 
 def parse_due_date(text):
     if "завтра" in text.lower():
@@ -52,7 +52,6 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
-        send_message(chat_id, f"🤖 GPT RAW RESPONSE:\n{gpt_response}")
 
         try:
             parsed = json.loads(gpt_response)
@@ -67,8 +66,8 @@ def webhook():
         if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
 
-        zapier_response = requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
-        send_message(chat_id, f"📡 Отправлено в Zapier (код {zapier_response.status_code})\n✅ Задача: {parsed['title']}")
+        requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
+        send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
 
     except Exception as e:
         send_message(chat_id, f"❌ Ошибка: {e}")
