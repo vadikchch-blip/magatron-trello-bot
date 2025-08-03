@@ -28,10 +28,7 @@ def ask_gpt_to_parse_task(text):
     return response["choices"][0]["message"]["content"]
 
 def parse_due_date(text):
-    parsed_date = dateparser.parse(
-        text,
-        settings={'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'Europe/Moscow', 'RETURN_AS_TIMEZONE_AWARE': False}
-    )
+    parsed_date = dateparser.parse(text, settings={'PREFER_DATES_FROM': 'future'})
     if parsed_date:
         return parsed_date.isoformat()
     return None
@@ -66,6 +63,7 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
+        # Если GPT не вернул due_date — пробуем вытащить вручную
         if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
 
