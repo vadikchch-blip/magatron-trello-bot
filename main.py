@@ -29,9 +29,7 @@ def ask_gpt_to_parse_task(text):
     return response["choices"][0]["message"]["content"]
 
 def parse_due_date(text):
-    print(f"🕓 Парсим дату из текста: {text}")
     now = datetime.now()
-
     parsed_date = dateparser.parse(
         text,
         settings={
@@ -42,8 +40,6 @@ def parse_due_date(text):
             "RELATIVE_BASE": now
         }
     )
-
-    print(f"➡️ Результат парсинга: {parsed_date}")
 
     if not parsed_date:
         return None
@@ -74,6 +70,7 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
+        print(f"GPT RESPONSE: {gpt_response}")
 
         try:
             parsed = json.loads(gpt_response)
@@ -87,10 +84,23 @@ def webhook():
 
         if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
+        else:
+            parsed_dt = dateparser.parse(
+                parsed["due_date"],
+                settings={
+                    "TIMEZONE": "Europe/Moscow",
+                    "TO_TIMEZONE": "Europe/Moscow",
+                    "PREFER_DATES_FROM": "future",
+                    "RELATIVE_BASE": datetime.now()
+                }
+            )
+            if parsed_dt and parsed_dt < datetime.now():
+                fixed_date = parse_due_date(message)
+                if fixed_date:
+                    print(f"⚠️ GPT выдал прошлую дату {parsed['due_date']}, заменяем на {fixed_date}")
+                    parsed["due_date"] = fixed_date
 
-        # 👉 Логируем итоговый объект
-        print(f"📤 Отправка в Zapier:\n{json.dumps(parsed, ensure_ascii=False, indent=2)}")
-
+        print(f"📤 Отправка в Zapier:\n{json.dumps(parsed, indent=2, ensure_ascii=False)}")
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
 
