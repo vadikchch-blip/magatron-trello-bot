@@ -4,4 +4,5 @@ python-dotenv==1.0.0
 requests==2.31.0
 gunicorn==23.0.0
 dateparser==1.1.8
+python-dateutil==2.9.0.post0
 pytz==2024.1
