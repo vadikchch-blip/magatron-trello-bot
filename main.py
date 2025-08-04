@@ -6,31 +6,17 @@ from datetime import datetime, timedelta
 import openai
 import dateparser
 
-# Настройка ключей
 openai.api_key = os.environ["OPENAI_API_KEY"]
+app = Flask(__name__)
+
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 
-app = Flask(__name__)
-
-# Парсинг сроков через dateparser
-def parse_due_date(text):
-    settings = {
-        "PREFER_DATES_FROM": "future",
-        "TIMEZONE": "Europe/Moscow",
-        "RETURN_AS_TIMEZONE_AWARE": False,
-        "RELATIVE_BASE": datetime.now()
-    }
-    parsed = dateparser.parse(text, languages=["ru"], settings=settings)
-    if parsed:
-        return parsed.isoformat()
-    return None
-
-# GPT парсер задачи
 def ask_gpt_to_parse_task(text):
     system_prompt = (
         "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
-        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), due_date (строка в ISO 8601 или null), labels (список строк)."
+        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), "
+        "due_date (строка в ISO 8601 или null), labels (список строк)."
     )
     response = openai.ChatCompletion.create(
         model="gpt-4",
@@ -42,7 +28,15 @@ def ask_gpt_to_parse_task(text):
     )
     return response["choices"][0]["message"]["content"]
 
-# Отправка сообщения в Telegram
+def parse_due_date(text):
+    parsed_date = dateparser.parse(
+        text,
+        settings={"TIMEZONE": "Europe/Moscow", "PREFER_DATES_FROM": "future"}
+    )
+    if parsed_date:
+        return parsed_date.isoformat()
+    return None
+
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -52,7 +46,7 @@ def send_message(chat_id, text):
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Magatron is alive."
+    return "OK"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -73,7 +67,6 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        # Если GPT не распознал дату — парсим её сами
         if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
 
@@ -83,6 +76,3 @@ def webhook():
     except Exception as e:
         send_message(chat_id, f"❌ Ошибка: {e}")
     return "ok"
-
-if __name__ == "__main__":
-    app.run(port=8080)
