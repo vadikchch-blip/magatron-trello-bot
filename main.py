@@ -2,7 +2,7 @@ import os
 import json
 import requests
 from flask import Flask, request
-from datetime import datetime, timedelta
+from datetime import datetime
 import openai
 import dateparser
 
