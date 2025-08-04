@@ -5,6 +5,7 @@ from flask import Flask, request
 from datetime import datetime
 import openai
 import dateparser
+from dateutil import parser as dateutil_parser
 import pytz
 
 openai.api_key = os.environ["OPENAI_API_KEY"]
@@ -12,13 +13,12 @@ app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
-
 moscow_tz = pytz.timezone("Europe/Moscow")
 
 def ask_gpt_to_parse_task(text):
+    now_str = datetime.now(moscow_tz).strftime("%Y-%m-%d %H:%M:%S")
     system_prompt = (
-        "Сегодня: " + datetime.now(moscow_tz).strftime("%Y-%m-%d %H:%M") + "\n\n"
-        "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
+        f"Сегодня: {now_str}. Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
         "Ответ возвращай строго в JSON с полями: title (строка), description (строка), "
         "due_date (строка в ISO 8601 или null), labels (список строк)."
     )
@@ -34,7 +34,6 @@ def ask_gpt_to_parse_task(text):
 
 def parse_due_date(text):
     now = datetime.now(moscow_tz)
-
     parsed_date = dateparser.parse(
         text,
         settings={
@@ -45,17 +44,9 @@ def parse_due_date(text):
             "RELATIVE_BASE": now
         }
     )
-
-    if not parsed_date:
-        return None
-
-    # Исправление: если год не указан и дата в прошлом — поднимаем на 1 год вперёд
-    if parsed_date.year < now.year:
-        parsed_date = parsed_date.replace(year=now.year)
-        if parsed_date < now:
-            parsed_date = parsed_date.replace(year=now.year + 1)
-
-    return parsed_date.isoformat()
+    if parsed_date:
+        return parsed_date.isoformat()
+    return None
 
 def send_message(chat_id, text):
     try:
@@ -76,7 +67,6 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
-        print("\nGPT RESPONSE:", gpt_response)
 
         try:
             parsed = json.loads(gpt_response)
@@ -88,17 +78,26 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        # Если дата в ответе GPT в прошлом — заменим на нормальную
+        # Проверка даты от GPT и замена, если она в прошлом
         if parsed.get("due_date"):
-            gpt_dt = dateparser.parse(parsed["due_date"])
-            now = datetime.now(moscow_tz)
-            if gpt_dt and gpt_dt < now:
-                send_message(chat_id, f"⚠️ GPT дал старую дату {gpt_dt}, заменяем")
-                parsed["due_date"] = parse_due_date(message)
-        else:
-            parsed["due_date"] = parse_due_date(message)
+            try:
+                gpt_dt = dateutil_parser.parse(parsed["due_date"])
+                now = datetime.now(moscow_tz)
 
-        print("\n📤 Отправка в Zapier:\n", json.dumps(parsed, indent=2, ensure_ascii=False))
+                if gpt_dt.tzinfo is None:
+                    gpt_dt = gpt_dt.replace(tzinfo=None)
+                    now = now.replace(tzinfo=None)
+
+                if gpt_dt < now:
+                    send_message(chat_id, f"⚠️ GPT дал старую дату {gpt_dt}, заменяем")
+                    parsed["due_date"] = parse_due_date(message)
+
+            except Exception as e:
+                send_message(chat_id, f"⚠️ Ошибка при проверке даты: {e}")
+                parsed["due_date"] = parse_due_date(message)
+
+        if not parsed.get("due_date"):
+            parsed["due_date"] = parse_due_date(message)
 
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
