@@ -30,7 +30,6 @@ def ask_gpt_to_parse_task(text):
 
 def parse_due_date(text):
     now = datetime.now()
-
     parsed_date = dateparser.parse(
         text,
         settings={
@@ -45,8 +44,8 @@ def parse_due_date(text):
     if not parsed_date:
         return None
 
-    # Если дата в прошлом, при отсутствии явно указанного года — обновим год
-    if parsed_date < now and parsed_date.year < now.year:
+    # Если дата без года и получилась в прошлом — двигаем её вперёд
+    if parsed_date.year < now.year:
         parsed_date = parsed_date.replace(year=now.year)
         if parsed_date < now:
             parsed_date = parsed_date.replace(year=now.year + 1)
@@ -84,14 +83,16 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        # Проверяем дату, если GPT дал due_date
+        # Проверка и исправление даты, если GPT вернул в прошлом
         if parsed.get("due_date"):
             try:
                 gpt_dt = datetime.fromisoformat(parsed["due_date"])
-                if gpt_dt < datetime.now():
+                now = datetime.now()
+
+                if gpt_dt.year < 2023:
+                    print(f"⚠️ GPT дал старую дату {gpt_dt}, заменяем")
                     fixed_date = parse_due_date(message)
                     if fixed_date:
-                        print(f"⚠️ GPT дал прошлую дату: {parsed['due_date']}, заменяем на {fixed_date}")
                         parsed["due_date"] = fixed_date
             except Exception as e:
                 print(f"Ошибка обработки due_date: {e}")
