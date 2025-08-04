@@ -15,8 +15,8 @@ ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 def ask_gpt_to_parse_task(text):
     system_prompt = (
         "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
-        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), "
-        "due_date (строка в ISO 8601 или null), labels (список строк)."
+        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), labels (список строк). "
+        "Не включай поле due_date — оно будет добавлено другой системой."
     )
     response = openai.ChatCompletion.create(
         model="gpt-4",
@@ -44,6 +44,7 @@ def parse_due_date(text):
     if not parsed_date:
         return None
 
+    # Если дата без года — и она уже прошла, сдвигаем на будущий год
     if parsed_date.year < now.year:
         parsed_date = parsed_date.replace(year=now.year)
         if parsed_date < now:
@@ -70,7 +71,6 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
-        print("GPT RESPONSE:", gpt_response)  # 👈 Вставка для отладки
 
         try:
             parsed = json.loads(gpt_response)
@@ -82,8 +82,8 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        if not parsed.get("due_date"):
-            parsed["due_date"] = parse_due_date(message)
+        # Теперь парсим дату всегда на своей стороне
+        parsed["due_date"] = parse_due_date(message)
 
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
