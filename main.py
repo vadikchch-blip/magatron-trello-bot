@@ -2,7 +2,7 @@ import os
 import json
 import requests
 from flask import Flask, request
-from datetime import datetime
+from datetime import datetime, timedelta
 import openai
 import dateparser
 
@@ -38,21 +38,23 @@ def parse_due_date(text):
             "TO_TIMEZONE": "Europe/Moscow",
             "PREFER_DATES_FROM": "future",
             "RETURN_AS_TIMEZONE_AWARE": False,
-            "RELATIVE_BASE": now
+            "RELATIVE_BASE": now,
+            "STRICT_PARSING": True
         }
     )
 
     if not parsed_date:
         return None
 
-    # Если дата оказалась в прошлом — принудительно корректируем год
+    # Если явно не указан год, и дата в прошлом — заменим на текущий/следующий год
+    if parsed_date.year < now.year:
+        parsed_date = parsed_date.replace(year=now.year)
+        if parsed_date < now:
+            parsed_date = parsed_date.replace(year=now.year + 1)
+
+    # Если дата всё ещё в прошлом — просто добавим сутки
     if parsed_date < now:
-        try:
-            parsed_date = parsed_date.replace(year=now.year)
-            if parsed_date < now:
-                parsed_date = parsed_date.replace(year=now.year + 1)
-        except ValueError:
-            pass  # например, 29 февраля в невисокосный год
+        parsed_date = now + timedelta(days=1)
 
     return parsed_date.isoformat()
 
