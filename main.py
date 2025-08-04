@@ -13,8 +13,10 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ZAPIER_WEBHOOK_URL = os.environ["ZAPIER_WEBHOOK_URL"]
 
 def ask_gpt_to_parse_task(text):
+    today = datetime.now().strftime("%Y-%m-%d")
     system_prompt = (
-        "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
+        f"Сегодня {today}. Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
+        "Если в сообщении указано 'завтра', 'в пятницу', '7 августа' и т.п., интерпретируй эти даты относительно текущей. "
         "Ответ возвращай строго в JSON с полями: title (строка), description (строка), "
         "due_date (строка в ISO 8601 или null), labels (список строк)."
     )
@@ -30,6 +32,7 @@ def ask_gpt_to_parse_task(text):
 
 def parse_due_date(text):
     now = datetime.now()
+
     parsed_date = dateparser.parse(
         text,
         settings={
@@ -44,9 +47,8 @@ def parse_due_date(text):
     if not parsed_date:
         return None
 
-    # 🛠 Исправляем год, если явно не указан и дата в прошлом
+    # Исправляем год, если дата в прошлом и явно не указан год
     if parsed_date.year < now.year:
-        print(f"⚠️ GPT дал старую дату {parsed_date}, исправляем...")
         parsed_date = parsed_date.replace(year=now.year)
         if parsed_date < now:
             parsed_date = parsed_date.replace(year=now.year + 1)
@@ -72,7 +74,6 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
-        print(f"\nGPT RESPONSE: {gpt_response}")
 
         try:
             parsed = json.loads(gpt_response)
@@ -84,10 +85,9 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        if not parsed.get("due_date") or "2022" in parsed.get("due_date", ""):
+        if not parsed.get("due_date"):
             parsed["due_date"] = parse_due_date(message)
 
-        print(f"\n📤 Отправка в Zapier:\n{json.dumps(parsed, indent=2, ensure_ascii=False)}")
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
 
