@@ -31,7 +31,13 @@ def ask_gpt_to_parse_task(text):
 def parse_due_date(text):
     parsed_date = dateparser.parse(
         text,
-        settings={"TIMEZONE": "Europe/Moscow", "PREFER_DATES_FROM": "future"}
+        settings={
+            "TIMEZONE": "Europe/Moscow",
+            "TO_TIMEZONE": "Europe/Moscow",
+            "PREFER_DATES_FROM": "future",
+            "RETURN_AS_TIMEZONE_AWARE": False,
+            "RELATIVE_BASE": datetime.now()
+        }
     )
     if parsed_date:
         return parsed_date.isoformat()
