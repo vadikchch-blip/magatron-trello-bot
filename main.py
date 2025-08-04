@@ -45,11 +45,14 @@ def parse_due_date(text):
     if not parsed_date:
         return None
 
-    # Если год явно не указан и дата получилась в прошлом — исправим
-    if parsed_date.year < now.year:
-        parsed_date = parsed_date.replace(year=now.year)
-        if parsed_date < now:
-            parsed_date = parsed_date.replace(year=now.year + 1)
+    # Если дата оказалась в прошлом — принудительно корректируем год
+    if parsed_date < now:
+        try:
+            parsed_date = parsed_date.replace(year=now.year)
+            if parsed_date < now:
+                parsed_date = parsed_date.replace(year=now.year + 1)
+        except ValueError:
+            pass  # например, 29 февраля в невисокосный год
 
     return parsed_date.isoformat()
 
