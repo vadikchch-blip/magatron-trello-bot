@@ -44,8 +44,9 @@ def parse_due_date(text):
     if not parsed_date:
         return None
 
-    # Если дата без года и получилась в прошлом — двигаем её вперёд
+    # 🛠 Исправляем год, если явно не указан и дата в прошлом
     if parsed_date.year < now.year:
+        print(f"⚠️ GPT дал старую дату {parsed_date}, исправляем...")
         parsed_date = parsed_date.replace(year=now.year)
         if parsed_date < now:
             parsed_date = parsed_date.replace(year=now.year + 1)
@@ -71,7 +72,7 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
-        print("GPT RESPONSE:", gpt_response)
+        print(f"\nGPT RESPONSE: {gpt_response}")
 
         try:
             parsed = json.loads(gpt_response)
@@ -83,26 +84,10 @@ def webhook():
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        # Проверка и исправление даты, если GPT вернул в прошлом
-        if parsed.get("due_date"):
-            try:
-                gpt_dt = datetime.fromisoformat(parsed["due_date"])
-                now = datetime.now()
-
-                if gpt_dt.year < 2023:
-                    print(f"⚠️ GPT дал старую дату {gpt_dt}, заменяем")
-                    fixed_date = parse_due_date(message)
-                    if fixed_date:
-                        parsed["due_date"] = fixed_date
-            except Exception as e:
-                print(f"Ошибка обработки due_date: {e}")
-                fixed_date = parse_due_date(message)
-                if fixed_date:
-                    parsed["due_date"] = fixed_date
-        else:
+        if not parsed.get("due_date") or "2022" in parsed.get("due_date", ""):
             parsed["due_date"] = parse_due_date(message)
 
-        print("📤 Отправка в Zapier:\n", json.dumps(parsed, indent=2, ensure_ascii=False))
+        print(f"\n📤 Отправка в Zapier:\n{json.dumps(parsed, indent=2, ensure_ascii=False)}")
         requests.post(ZAPIER_WEBHOOK_URL, json=parsed)
         send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
 
