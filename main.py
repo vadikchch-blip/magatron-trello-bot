@@ -2,7 +2,7 @@ import os
 import json
 import requests
 from flask import Flask, request
-from datetime import datetime, timedelta
+from datetime import datetime
 import openai
 import dateparser
 
@@ -30,7 +30,6 @@ def ask_gpt_to_parse_task(text):
 
 def parse_due_date(text):
     now = datetime.now()
-
     parsed_date = dateparser.parse(
         text,
         settings={
@@ -38,23 +37,17 @@ def parse_due_date(text):
             "TO_TIMEZONE": "Europe/Moscow",
             "PREFER_DATES_FROM": "future",
             "RETURN_AS_TIMEZONE_AWARE": False,
-            "RELATIVE_BASE": now,
-            "STRICT_PARSING": True
+            "RELATIVE_BASE": now
         }
     )
 
     if not parsed_date:
         return None
 
-    # Если явно не указан год, и дата в прошлом — заменим на текущий/следующий год
     if parsed_date.year < now.year:
         parsed_date = parsed_date.replace(year=now.year)
         if parsed_date < now:
             parsed_date = parsed_date.replace(year=now.year + 1)
-
-    # Если дата всё ещё в прошлом — просто добавим сутки
-    if parsed_date < now:
-        parsed_date = now + timedelta(days=1)
 
     return parsed_date.isoformat()
 
@@ -77,6 +70,7 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
 
         gpt_response = ask_gpt_to_parse_task(message)
+        print("GPT RESPONSE:", gpt_response)  # 👈 Вставка для отладки
 
         try:
             parsed = json.loads(gpt_response)
