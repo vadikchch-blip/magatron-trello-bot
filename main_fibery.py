@@ -3,98 +3,87 @@ import openai
 import requests
 from flask import Flask, request, jsonify
 from datetime import datetime
-from pytz import timezone
 from dotenv import load_dotenv
 
 load_dotenv()
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-fibery_api_token = os.getenv("FIBERY_API_TOKEN")
-fibery_workspace = os.getenv("FIBERY_WORKSPACE")
-
 app = Flask(__name__)
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Magatron 2.0 Fibery is running!"
+FIBERY_API_TOKEN = os.getenv("FIBERY_API_TOKEN")
+FIBERY_WORKSPACE = os.getenv("FIBERY_WORKSPACE")
+
+FIBERY_HEADERS = {
+    "Authorization": f"Token {FIBERY_API_TOKEN}",
+    "Content-Type": "application/json"
+}
+
+FIBERY_URL = f"https://{FIBERY_WORKSPACE}.fibery.io/api/entities/Task"
+
+SYSTEM_PROMPT = """
+Ты помощник, который превращает произвольные сообщения в структуру задачи. 
+Твоя цель — выделить из текста:
+
+1. title — короткое название задачи
+2. description — если есть пояснение, добавь сюда
+3. due_date — крайний срок задачи (в формате ISO 8601)
+4. labels — список меток (по контексту)
+
+Если дата указана как "завтра", "в пятницу", "через 2 дня", используй текущую дату как опорную: {{CURRENT_DATETIME}}.
+"""
 
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
-    data = request.get_json()
+    data = request.json
 
     message = data.get("message", {})
     chat_id = message.get("chat", {}).get("id")
     message_id = message.get("message_id")
     text = message.get("text", "")
 
-    print("[DEBUG] Входящее сообщение:", text)
+    print(f"[DEBUG] Входящее сообщение: {text}")
 
-    # Формируем system_prompt с текущим временем
-    now = datetime.now(timezone("Europe/Moscow")).isoformat()
-    system_prompt = (
-        f"Сегодня {now}. "
-        "Ты — ассистент, который помогает извлекать задачи из сообщений. "
-        "Верни JSON с ключами: title, description (может быть пустым), due_date (в формате ISO 8601), labels (список строк). "
-        "Если срок задачи не указан, поставь null. Пример:\n"
-        "{\n"
-        "  \"title\": \"Позвонить маме\",\n"
-        "  \"description\": \"\",\n"
-        "  \"due_date\": \"2025-08-06T15:00:00\",\n"
-        "  \"labels\": [\"личное\"]\n"
-        "}"
+    now = datetime.now().isoformat()
+    prompt = SYSTEM_PROMPT.replace("{{CURRENT_DATETIME}}", now)
+
+    gpt_response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text}
+        ]
     )
 
+    content = gpt_response.choices[0].message.content
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ]
-        )
-        gpt_response = response.choices[0].message["content"]
-        print("[DEBUG] GPT RESPONSE:", gpt_response)
-
-        task_data = eval(gpt_response)
-
-        # Проверяем дату
-        due_date = task_data.get("due_date")
-        if due_date and "2022" in due_date:
-            print("[DEBUG] ⚠️ GPT дал старую дату", due_date, ", заменяем")
-            due_date = None
-
-        payload = {
-            "fibery/type": "Magatron space/Задача",
-            "Name": task_data.get("title"),
-            "Description": task_data.get("description"),
-            "Срок": due_date,
-            "Метки": task_data.get("labels"),
-            "Tr Telegram Chat ID": str(chat_id),
-            "Tr Telegram Message ID": str(message_id),
-            "Создано в Telegram": True
-        }
-
-        print("[DEBUG] 📤 Отправка в Fibery:")
-        print(payload)
-
-        headers = {
-            "Authorization": f"Token {fibery_api_token}",
-            "Content-Type": "application/json"
-        }
-
-        url = f"https://{fibery_workspace}.fibery.io/api/entities/Magatron%20space/%D0%97%D0%B0%D0%B4%D0%B0%D1%87%D0%B0"
-        response = requests.post(url, json=[payload], headers=headers)
-
-        if response.status_code == 200:
-            return jsonify({"status": "ok"}), 200
-        else:
-            print("❌ Fibery не принял задачу:", response.text)
-            return jsonify({"status": "error", "message": response.text}), 400
-
+        task_data = eval(content)
+        print("[DEBUG] GPT RESPONSE:", task_data)
     except Exception as e:
-        print("❌ Ошибка:", str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
+        print("Ошибка при обработке GPT-ответа:", e)
+        return jsonify({"ok": True})
 
+    fibery_payload = {
+        "fibery/type": "Task",
+        "Name": task_data.get("title"),
+        "Description": task_data.get("description", ""),
+        "Due Date": task_data.get("due_date"),
+        "Labels": task_data.get("labels", []),
+        "Telegram Chat ID": str(chat_id),
+        "Telegram Message ID": str(message_id),
+        "Created in Telegram": True
+    }
 
-if __name__ == "__main__":
-    app.run(port=8080)
+    print("[DEBUG] 📤 Отправка в Fibery:\n", fibery_payload)
+
+    response = requests.post(
+        FIBERY_URL,
+        headers=FIBERY_HEADERS,
+        json=fibery_payload
+    )
+
+    if response.status_code == 200:
+        print("✅ Задача успешно добавлена в Fibery.")
+    else:
+        print("❌ Fibery не принял задачу:", response.text)
+
+    return jsonify({"ok": True})
