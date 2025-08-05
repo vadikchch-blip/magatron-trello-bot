@@ -2,27 +2,24 @@ import os
 import json
 import requests
 from flask import Flask, request
+from datetime import datetime
 import openai
+import dateparser
 
 openai.api_key = os.environ["OPENAI_API_KEY"]
-FIBERY_API_TOKEN = os.environ["FIBERY_API_TOKEN"]
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-
 app = Flask(__name__)
 
-FIBERY_API_URL = "https://magatron-lab.fibery.io/api/entities/Задача"
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+FIBERY_API_TOKEN = os.environ["FIBERY_API_TOKEN"]
+FIBERY_WORKSPACE = os.environ["FIBERY_WORKSPACE"]  # Пример: magatron-lab
 
-HEADERS = {
-    "Authorization": f"Token {FIBERY_API_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-def ask_gpt_to_parse_task(text, now_str):
+def ask_gpt_to_parse_task(text):
+    now = datetime.now().isoformat()
     system_prompt = (
-        "Ты помощник, который получает сообщение от пользователя и должен распознать задачу. "
-        "Ответ возвращай строго в JSON с полями: title (строка), description (строка), "
-        "due_date (строка в ISO 8601 или null), labels (список строк). "
-        f"Сегодняшняя дата: {now_str}. Используй её как точку отсчета, если дата не указана явно."
+        f"Сегодняшняя дата: {now}.\n"
+        "Ты помощник, который получает задачу от пользователя. "
+        "Ответ верни строго в JSON с полями: title (строка), description (строка), "
+        "due_date (строка в ISO 8601 или null), labels (список строк)."
     )
     response = openai.ChatCompletion.create(
         model="gpt-4",
@@ -34,29 +31,30 @@ def ask_gpt_to_parse_task(text, now_str):
     )
     return response["choices"][0]["message"]["content"]
 
+def parse_due_date(text):
+    now = datetime.now()
+    parsed_date = dateparser.parse(
+        text,
+        settings={
+            "TIMEZONE": "Europe/Moscow",
+            "TO_TIMEZONE": "Europe/Moscow",
+            "RETURN_AS_TIMEZONE_AWARE": False,
+            "PREFER_DATES_FROM": "future",
+            "RELATIVE_BASE": now
+        }
+    )
+    return parsed_date.isoformat() if parsed_date else None
+
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text})
     except Exception as e:
-        print(f"[Telegram Error] {e}")
-
-def send_to_fibery(task):
-    data = {
-        "type": "Задача",
-        "fields": {
-            "Name": task.get("title"),
-            "Описание": task.get("description", ""),
-            "Срок": task.get("due_date"),
-            "Метки": task.get("labels", [])
-        }
-    }
-    response = requests.post(FIBERY_API_URL, headers=HEADERS, json=data)
-    return response.status_code, response.text
+        print(f"[ERROR] Telegram error: {e}")
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Fibery webhook is running."
+    return "OK"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -64,31 +62,50 @@ def webhook():
     try:
         message = data["message"]["text"]
         chat_id = data["message"]["chat"]["id"]
+        message_id = data["message"]["message_id"]
 
-        now_str = data["message"]["date"]  # это timestamp
-        from datetime import datetime
-        dt = datetime.utcfromtimestamp(now_str).isoformat()
-
-        gpt_response = ask_gpt_to_parse_task(message, dt)
-        print("[GPT RESPONSE]", gpt_response)
+        gpt_response = ask_gpt_to_parse_task(message)
+        print("[DEBUG] GPT RESPONSE:", gpt_response)
 
         try:
-            task = json.loads(gpt_response)
+            parsed = json.loads(gpt_response)
         except Exception as e:
-            send_message(chat_id, f"❌ Ошибка парсинга JSON: {e}\n{gpt_response}")
+            send_message(chat_id, f"❌ Ошибка парсинга JSON: {e}\n\n{gpt_response}")
             return "ok"
 
-        if not task.get("title"):
+        if not parsed.get("title"):
             send_message(chat_id, "⚠️ Не удалось распознать задачу")
             return "ok"
 
-        status, response_text = send_to_fibery(task)
+        if not parsed.get("due_date"):
+            parsed["due_date"] = parse_due_date(message)
 
-        if status == 200 or status == 201:
-            send_message(chat_id, f"✅ Задача добавлена: {task['title']}")
+        entity = {
+            "type": "Magatron_space/Задача",
+            "fields": {
+                "Name": parsed["title"],
+                "Description": parsed.get("description", ""),
+                "Метки": parsed.get("labels", []),
+                "Создано в Telegram": True,
+                "Tr Telegram Chat ID": str(chat_id),
+                "Tr Telegram Message ID": str(message_id),
+                "Срок": parsed["due_date"]
+            }
+        }
+
+        print("[DEBUG] 📤 Отправка в Fibery:\n", json.dumps(entity, indent=2, ensure_ascii=False))
+
+        response = requests.post(
+            f"https://{FIBERY_WORKSPACE}.fibery.io/api/entities/Magatron_space/Задача",
+            headers={"Authorization": f"Token {FIBERY_API_TOKEN}"},
+            json=[entity]
+        )
+
+        if response.status_code == 200:
+            send_message(chat_id, f"✅ Задача добавлена: {parsed['title']}")
         else:
-            send_message(chat_id, f"❌ Fibery не принял задачу: {response_text}")
+            send_message(chat_id, f"❌ Fibery не принял задачу: {response.text}")
 
     except Exception as e:
-        send_message(chat_id, f"❌ Общая ошибка: {e}")
+        send_message(chat_id, f"❌ Ошибка: {e}")
     return "ok"
