@@ -6,7 +6,6 @@ import openai
 import json
 from datetime import datetime
 from dateparser import parse
-from urllib.parse import quote
 
 app = Flask(__name__)
 
@@ -14,13 +13,13 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FIBERY_API_TOKEN = os.getenv("FIBERY_API_TOKEN")
-FIBERY_API_URL = os.getenv("FIBERY_API_URL")  # пример: https://magatron-lab.fibery.io
+FIBERY_API_URL = os.getenv("FIBERY_API_URL")  # Пример: https://magatron-lab.fibery.io
 
 openai.api_key = OPENAI_API_KEY
 
 logging.basicConfig(level=logging.DEBUG)
 
-# --- Обработка Telegram webhook ---
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
@@ -74,8 +73,7 @@ def webhook():
             due_date = parsed_due.strftime("%Y-%m-%dT%H:%M:%S") if parsed_due else None
 
         # Подготовка данных
-        entity_type = quote("Magatron space/Task")
-        url = f"{FIBERY_API_URL}/api/entities/{entity_type}"
+        url = f"{FIBERY_API_URL}/api/entities"
         headers = {
             "Authorization": f"Token {FIBERY_API_TOKEN}",
             "Content-Type": "application/json",
@@ -105,6 +103,7 @@ def webhook():
         send_telegram_message(chat_id, "❌ Ошибка при разборе задачи")
 
     return "ok"
+
 
 def send_telegram_message(chat_id, text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
