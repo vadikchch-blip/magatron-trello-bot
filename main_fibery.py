@@ -1,26 +1,25 @@
-import logging
 import os
+import json
+import logging
 from flask import Flask, request
 import requests
 import openai
-import json
 from datetime import datetime
 from dateparser import parse
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
-# --- Конфигурация ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FIBERY_API_TOKEN = os.getenv("FIBERY_API_TOKEN")
-FIBERY_API_URL = os.getenv("FIBERY_API_URL")  # Пример: https://magatron-lab.fibery.io
+FIBERY_API_URL = os.getenv("FIBERY_API_URL")  # https://magatron-lab.fibery.io
 
 openai.api_key = OPENAI_API_KEY
 
-logging.basicConfig(level=logging.DEBUG)
+FIBERY_GRAPHQL_URL = f"{FIBERY_API_URL}/api/graphql"
 
-
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     logging.debug("[DEBUG] Входящее сообщение: %s", data)
@@ -35,7 +34,6 @@ def webhook():
 
     try:
         now = datetime.utcnow().isoformat()
-
         system_prompt = (
             "Ты помощник по организации задач. Извлеки из текста:\n"
             "1. Название задачи (title)\n"
@@ -50,7 +48,6 @@ def webhook():
             '  "labels": ["..."]\n'
             "}"
         )
-
         user_content = f"Сегодня: {now}\n\nЗадача: {text}"
 
         response = openai.ChatCompletion.create(
@@ -65,45 +62,54 @@ def webhook():
         logging.debug("[DEBUG] GPT RESPONSE: %s", gpt_reply)
 
         task_data = json.loads(gpt_reply)
-
-        # Парсим due_date
         due_date = task_data.get("due_date")
         if due_date:
-            parsed_due = parse(due_date)
-            due_date = parsed_due.strftime("%Y-%m-%dT%H:%M:%S") if parsed_due else None
+            parsed = parse(due_date)
+            due_date = parsed.strftime("%Y-%m-%dT%H:%M:%S") if parsed else None
 
-        # Подготовка данных
-        url = f"{FIBERY_API_URL}/api/entities"
+        graphql_query = {
+            "query": """
+                mutation CreateTask($data: [Magatron_space_TaskInput!]) {
+                  create_Magatron_space_Task_batch(entityBatch: $data) {
+                    id
+                  }
+                }
+            """,
+            "variables": {
+                "data": [
+                    {
+                        "Name": task_data.get("title", ""),
+                        "Description": task_data.get("description", ""),
+                        "Due Date": due_date,
+                        "Labels": task_data.get("labels", []),
+                        "Telegram Chat ID": str(chat_id),
+                        "Telegram Message ID": str(message_id),
+                        "Created in Telegram": True,
+                    }
+                ]
+            }
+        }
+
         headers = {
             "Authorization": f"Token {FIBERY_API_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "fibery/type": "Magatron space/Task",
-            "Name": task_data.get("title", ""),
-            "Description": task_data.get("description", ""),
-            "Due Date": due_date,
-            "Labels": task_data.get("labels", []),
-            "Telegram Chat ID": str(chat_id),
-            "Telegram Message ID": str(message_id),
-            "Created in Telegram": True,
+            "Content-Type": "application/json"
         }
 
-        logging.debug("[DEBUG] 📤 Отправка в Fibery:\n\n%s\n\n", json.dumps(payload, indent=4, ensure_ascii=False))
+        logging.debug("[DEBUG] 📤 GraphQL запрос в Fibery:\n%s", json.dumps(graphql_query, indent=2, ensure_ascii=False))
 
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
+        response = requests.post(FIBERY_GRAPHQL_URL, headers=headers, json=graphql_query)
+        logging.debug("[DEBUG] 📥 Ответ Fibery: %s", response.text)
+
+        if response.status_code == 200 and "errors" not in response.json():
             send_telegram_message(chat_id, "✅ Задача добавлена в Fibery")
         else:
-            logging.error("❌ Fibery не принял задачу: %s", response.text)
             send_telegram_message(chat_id, "❌ Ошибка при отправке в Fibery")
 
     except Exception as e:
-        logging.error("Ошибка при обработке GPT-ответа: %s", e)
+        logging.exception("Ошибка при обработке GPT-ответа")
         send_telegram_message(chat_id, "❌ Ошибка при разборе задачи")
 
     return "ok"
-
 
 def send_telegram_message(chat_id, text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
