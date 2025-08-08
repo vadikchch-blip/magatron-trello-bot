@@ -1,132 +1,78 @@
 import os
 import json
 import logging
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-
-import requests
+from datetime import datetime
 from flask import Flask, request
+import requests
 import openai
 from dateparser import parse as dp_parse
+from pytz import timezone, UTC
 
 # ----------------- Конфиг -----------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FIBERY_API_TOKEN = os.getenv("FIBERY_API_TOKEN")
-# ВАЖНО: именно space-эндпоинт!
-# пример: https://magatron-lab.fibery.io/api/graphql/space/Magatron_space
+
+# ДОЛЖЕН быть таким: https://magatron-lab.fibery.io/api/graphql/space/Magatron_space
 FIBERY_API_URL = os.getenv("FIBERY_API_URL")
 
-# 1 = писать в диапазонное поле due2 (DateRangeInput), иначе — в due (String)
-FIBERY_USE_DUE2 = os.getenv("FIBERY_USE_DUE2", "0") == "1"
+# Включаем режим due2 (диапазон) — у тебя в Railway уже FIBERY_USE_DUE2=1
+USE_DUE2 = os.getenv("FIBERY_USE_DUE2", "0") == "1"
+
+MOSCOW_TZ = timezone("Europe/Moscow")
 
 openai.api_key = OPENAI_API_KEY
 
-app = Flask(__name__)
 logging.basicConfig(level=logging.DEBUG)
+app = Flask(__name__)
 
-MSK = ZoneInfo("Europe/Moscow")
-
-# ----------------- Вспомогалочки -----------------
-def send_telegram_message(chat_id: int | str, text: str):
+# ----------------- Вспомогалки -----------------
+def send_telegram(chat_id: int | str, text: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
-        logging.error("Telegram send error: %s", e)
+        logging.error("TG send error: %s", e)
 
-def ask_gpt_to_parse_task(user_text: str, now_msk_iso: str) -> dict:
+def parse_due_local_msk_to_utc_iso(due_str: str | None) -> str | None:
     """
-    Просим GPT вытащить title/description/due/labels.
-    ВАЖНО: в промпт прокидываем «сегодня» (MSK), чтобы модель нормализовала относительные даты.
+    Принимаем строку из GPT (локальное МСК), возвращаем ISO в UTC с миллисекундами '...000Z'.
     """
-    system_prompt = (
-        "Ты помощник по организации задач. Извлеки из текста:\n"
-        "1) title (строка)\n"
-        "2) description (строка, можно пустую)\n"
-        "3) due (строка формата YYYY-MM-DDTHH:MM:SS, локальное московское время; если нет — null)\n"
-        "4) labels (массив строк)\n"
-        "Верни СТРОГО JSON без пояснений.\n"
-        "Пример:\n"
-        "{\n"
-        '  "title": "Позвонить в банк",\n'
-        '  "description": "",\n'
-        '  "due": "2025-08-07T14:00:00",\n'
-        '  "labels": ["звонок"]\n'
-        "}"
-    )
-    user_prompt = (
-        f"Сегодня (МСК): {now_msk_iso}\n\n"
-        f"Задача: {user_text}"
-    )
-
-    resp = openai.ChatCompletion.create(
-        model="gpt-4",
-        temperature=0.1,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_prompt},
-        ],
-    )
-    content = resp["choices"][0]["message"]["content"]
-    logging.debug("[DEBUG] GPT RAW: %s", content)
-
-    # Попробовать вычленить JSON даже если модель утащила лишние символы
-    try:
-        return json.loads(content)
-    except Exception:
-        # грубая зачистка обрамляющего текста
-        start = content.find("{")
-        end = content.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return json.loads(content[start:end+1])
-        raise
-
-def parse_due_local_to_utc(due_local_str: str) -> datetime | None:
-    """
-    Принимает локальное (МСК) due в виде строки 'YYYY-MM-DDTHH:MM:SS'.
-    Возвращает aware-дату в UTC.
-    """
-    if not due_local_str:
+    if not due_str:
         return None
-    # dateparser может скушать iso без таймзоны как naive → присвоим явно МСК
-    dt_local = dp_parse(due_local_str)
+    dt_local = dp_parse(
+        due_str,
+        settings={
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TIMEZONE": "Europe/Moscow",
+            "TO_TIMEZONE": "Europe/Moscow",
+            "PREFER_DATES_FROM": "future",
+        },
+    )
     if not dt_local:
         return None
-
-    # если naive — считаем это временем в МСК
+    # Если внезапно naive — локализуем как МСК
     if dt_local.tzinfo is None:
-        dt_local = dt_local.replace(tzinfo=MSK)
-    else:
-        # на всякий случай приводим всё в МСК, если GPT вдруг вернул таймзону
-        dt_local = dt_local.astimezone(MSK)
+        dt_local = MOSCOW_TZ.localize(dt_local)
+    dt_utc = dt_local.astimezone(UTC)
+    # С миллисекундами и суффиксом Z
+    return dt_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-    # → в UTC
-    return dt_local.astimezone(timezone.utc)
+def build_graphql_headers():
+    return {
+        "Authorization": f"Token {FIBERY_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
 
-def build_graphql_payload(name: str,
-                          description: str,
-                          due_utc: datetime | None,
-                          chat_id: str,
-                          msg_id: str,
-                          labels: list[str] | None):
+def fibery_create_task_range(name: str, start_iso_utc: str | None, end_iso_utc: str | None,
+                             chat_id: str, msg_id: str) -> dict:
     """
-    Возвращает (query, variables) для GraphQL под текущий режим:
-      - FIBERY_USE_DUE2=1 → пишем в due2 (DateRangeInput) со start=end
-      - иначе → due (String) в ISO UTC с 'Z'
-    Замечание: labels мы пока не шлём (их тип — filters), чтобы не ловить ошибки.
+    Создание задачи через due2 (диапазон). Если start/end None — шлём без due2.
     """
-    if FIBERY_USE_DUE2:
-        # Диапазон — обе точки одинаковые (point event)
-        if due_utc:
-            start_iso = due_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            end_iso = start_iso
-        else:
-            start_iso = None
-            end_iso = None
-
+    # Мутация без description и labels — они у Task.create не принимаются напрямую
+    if start_iso_utc and end_iso_utc:
         query = """
-            mutation($name: String!, $desc: String, $range: DateRangeInput, $chatId: String!, $msgId: String!) {
+            mutation($name: String!, $range: DateRangeInput, $chatId: String!, $msgId: String!) {
               tasks {
                 create(
                   name: $name
@@ -139,18 +85,50 @@ def build_graphql_payload(name: str,
             }
         """
         variables = {
-            "name": name or "",
-            "desc": description or "",
+            "name": name,
             "chatId": str(chat_id),
             "msgId": str(msg_id),
-            "range": {"start": start_iso, "end": end_iso} if start_iso else None
+            "range": {"start": start_iso_utc, "end": end_iso_utc},
         }
     else:
-        # Одиночная дата-время: Fibery ждёт строку UTC
-        due_iso = due_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z") if due_utc else None
-
+        # Без срока вообще
         query = """
-            mutation($name: String!, $desc: String, $due: String, $chatId: String!, $msgId: String!) {
+            mutation($name: String!, $chatId: String!, $msgId: String!) {
+              tasks {
+                create(
+                  name: $name
+                  createdInTelegram: true
+                  telegramChatId: $chatId
+                  telegramMessageId: $msgId
+                ) { message }
+              }
+            }
+        """
+        variables = {
+            "name": name,
+            "chatId": str(chat_id),
+            "msgId": str(msg_id),
+        }
+
+    payload = {"query": query, "variables": variables}
+    logging.debug("[DEBUG] ➜ Fibery GraphQL POST %s", FIBERY_API_URL)
+    logging.debug("[DEBUG] Variables:\n%s", json.dumps(variables, ensure_ascii=False, indent=2))
+    logging.debug("[DEBUG] Query:\n%s", query)
+
+    resp = requests.post(FIBERY_API_URL, headers=build_graphql_headers(), json=payload, timeout=20)
+    logging.debug("[DEBUG] ⇦ Fibery response:\n%s", resp.text)
+    try:
+        return resp.json()
+    except Exception:
+        return {"error": resp.text}
+
+def fibery_create_task_single(name: str, due_iso_utc: str | None, chat_id: str, msg_id: str) -> dict:
+    """
+    Создание задачи через одиночную дату due (String).
+    """
+    if due_iso_utc:
+        query = """
+            mutation($name: String!, $due: String, $chatId: String!, $msgId: String!) {
               tasks {
                 create(
                   name: $name
@@ -163,83 +141,126 @@ def build_graphql_payload(name: str,
             }
         """
         variables = {
-            "name": name or "",
-            "desc": description or "",
+            "name": name,
             "chatId": str(chat_id),
             "msgId": str(msg_id),
-            "due": due_iso
+            "due": due_iso_utc,
+        }
+    else:
+        query = """
+            mutation($name: String!, $chatId: String!, $msgId: String!) {
+              tasks {
+                create(
+                  name: $name
+                  createdInTelegram: true
+                  telegramChatId: $chatId
+                  telegramMessageId: $msgId
+                ) { message }
+              }
+            }
+        """
+        variables = {
+            "name": name,
+            "chatId": str(chat_id),
+            "msgId": str(msg_id),
         }
 
-    return query, variables
-
-def fibery_graphql(query: str, variables: dict) -> dict:
-    headers = {
-        "Authorization": f"Token {FIBERY_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    body = {"query": query, "variables": variables}
+    payload = {"query": query, "variables": variables}
     logging.debug("[DEBUG] ➜ Fibery GraphQL POST %s", FIBERY_API_URL)
     logging.debug("[DEBUG] Variables:\n%s", json.dumps(variables, ensure_ascii=False, indent=2))
     logging.debug("[DEBUG] Query:\n%s", query)
-    resp = requests.post(FIBERY_API_URL, headers=headers, json=body, timeout=20)
+
+    resp = requests.post(FIBERY_API_URL, headers=build_graphql_headers(), json=payload, timeout=20)
+    logging.debug("[DEBUG] ⇦ Fibery response:\n%s", resp.text)
     try:
-        data = resp.json()
+        return resp.json()
     except Exception:
-        data = {"raw": resp.text}
-    logging.debug("[DEBUG] ⇦ Fibery response:\n%s", json.dumps(data, ensure_ascii=False, indent=2))
-    return data
+        return {"error": resp.text}
 
-# ----------------- HTTP -----------------
-@app.route("/", methods=["GET"])
-def index():
-    return "OK"
-
+# ----------------- Telegram webhook -----------------
 @app.route("/webhook", methods=["POST"])
-def tg_webhook():
+def webhook():
     data = request.json
     logging.debug("[DEBUG] Входящее сообщение: %s", data)
 
-    if not data or "message" not in data or "text" not in data["message"]:
+    if "message" not in data or "text" not in data["message"]:
         return "ok"
 
     msg = data["message"]
     chat_id = msg["chat"]["id"]
-    message_id = msg["message_id"]
+    msg_id = msg["message_id"]
     text = msg["text"]
 
     try:
-        # Текущее «сегодня» в МСК в ISO без zюпок
-        now_msk = datetime.now(MSK)
-        now_msk_iso = now_msk.strftime("%Y-%m-%dT%H:%M:%S")
-
-        # Парс от GPT
-        g = ask_gpt_to_parse_task(text, now_msk_iso)
-        title = g.get("title") or ""
-        description = g.get("description") or ""
-        labels = g.get("labels") or []
-        due_local = g.get("due")  # локальная (МСК) строка
-
-        # Перевод due → UTC (aware)
-        due_utc = parse_due_local_to_utc(due_local) if due_local else None
-
-        # GraphQL → Fibery
-        query, variables = build_graphql_payload(
-            name=title,
-            description=description,
-            due_utc=due_utc,
-            chat_id=str(chat_id),
-            msg_id=str(message_id),
-            labels=labels
+        # ——— Вытащим структуру задачи через GPT ———
+        now_msk = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%dT%H:%M:%S")
+        system_prompt = (
+            "Ты помощник по организации задач. Извлеки из текста строго такой JSON:\n"
+            "{\n"
+            '  "title": "строка",\n'
+            '  "description": "строка (может быть пустой)",\n'
+            '  "due": "YYYY-MM-DDTHH:MM:SS (локальное московское время) или null",\n'
+            '  "labels": ["..."]\n'
+            "}\n"
+            "Если срок не указан — верни due: null."
         )
-        result = fibery_graphql(query, variables)
+        user_prompt = f"Сегодня (МСК): {now_msk}\n\nЗадача: {text}"
 
-        if "errors" in result:
-            send_telegram_message(chat_id, "❌ Ошибка при создании задачи в Fibery")
-            return "ok"
+        gpt_resp = openai.ChatCompletion.create(
+            model="gpt-4",
+            temperature=0.1,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = gpt_resp["choices"][0]["message"]["content"]
+        logging.debug("[DEBUG] GPT RAW: %s", content)
+        task = json.loads(content)
 
-        send_telegram_message(chat_id, f"✅ Задача добавлена: {title}")
+        title = task.get("title") or "Без названия"
+        due_str_local = task.get("due")  # строка в локальном МСК, либо None
+
+        # ——— Нормализуем дату ———
+        due_utc_iso = parse_due_local_msk_to_utc_iso(due_str_local)
+
+        # ——— Создаём в Fibery ———
+        if USE_DUE2:
+            # Диапазон: start=end= выбранное время
+            res = fibery_create_task_range(
+                name=title,
+                start_iso_utc=due_utc_iso,
+                end_iso_utc=due_utc_iso,
+                chat_id=str(chat_id),
+                msg_id=str(msg_id),
+            )
+        else:
+            # Одиночная дата
+            res = fibery_create_task_single(
+                name=title,
+                due_iso_utc=due_utc_iso,
+                chat_id=str(chat_id),
+                msg_id=str(msg_id),
+            )
+
+        # ——— Ответ пользователю ———
+        if "errors" in res:
+            logging.error("Fibery GraphQL errors: %s", res)
+            send_telegram(chat_id, "❌ Ошибка при отправке в Fibery")
+        else:
+            send_telegram(chat_id, "✅ Задача добавлена в Fibery")
+
     except Exception as e:
         logging.exception("Ошибка обработки сообщения: %s", e)
-        send_telegram_message(chat_id, "❌ Ошибка: не смог распознать/создать задачу")
+        send_telegram(chat_id, "❌ Ошибка при разборе задачи")
 
     return "ok"
+
+@app.route("/", methods=["GET"])
+def root():
+    return "OK"
+
+# ----------------- Запуск -----------------
+# Gunicorn старт: gunicorn main_fibery:app --bind 0.0.0.0:$PORT
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
