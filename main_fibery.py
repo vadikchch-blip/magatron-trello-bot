@@ -61,23 +61,18 @@ SYSTEM_PROMPT = (
     "  - title (строка)\n"
     "  - description (строка, можно пустую)\n"
     "  - start (строка в формате YYYY-MM-DDTHH:MM:SS — ЛОКАЛЬНОЕ московское время) или null\n"
-    "  - end (строка в том же формате, если в тексте указан диапазон «с … до …», «12:00–15:00», «с 12 до 13:30»; иначе null)\n"
+    "  - end (строка в том же формате; если в тексте указан диапазон «с … до …», иначе null)\n"
     "  - labels (массив строк)\n"
+    "  - reminders (массив целых минут-оффсетов до начала: например [1440, 60, 15]; если пользователь сказал «напомни за 2 часа и за 10 минут», то [120, 10]; если не просил — пустой массив)\n"
     "Если указан только один момент времени (например, «завтра в 15:00»), заполни start, а end верни null.\n"
-    "Примеры корректного ответа:\n"
+    "Верни ТОЛЬКО JSON вида:\n"
     "{\n"
-    '  "title": "Встреча",\n'
-    '  "description": "",\n'
-    '  "start": "2025-08-10T12:00:00",\n'
-    '  "end": "2025-08-10T15:00:00",\n'
-    '  "labels": []\n'
-    "}\n"
-    "{\n"
-    '  "title": "Позвонить",\n'
-    '  "description": "",\n'
-    '  "start": "2025-08-10T15:00:00",\n'
-    '  "end": null,\n'
-    '  "labels": []\n'
+    '  "title": "…",\n'
+    '  "description": "…",\n'
+    '  "start": "2025-08-10T12:00:00" | null,\n'
+    '  "end": "2025-08-10T15:00:00" | null,\n'
+    '  "labels": ["…"],\n'
+    '  "reminders": [числа]\n'
     "}"
 )
 
@@ -225,6 +220,19 @@ def webhook():
 
     try:
         parsed = llm_extract(text)
+
+# reminders из LLM (массив минут). Превратим в "120,10" или None.
+reminders_list = parsed.get("reminders") or []
+try:
+    reminders_list = sorted({int(x) for x in reminders_list if int(x) >= 1})
+except Exception:
+    reminders_list = []
+reminder_offsets_str = ",".join(str(x) for x in reminders_list) if reminders_list else None
+
+title = (parsed.get("title") or "").strip() or "Без названия"
+description = parsed.get("description") or ""
+start_str = parsed.get("start")
+end_str   = parsed.get("end")
         title = (parsed.get("title") or "").strip() or "Без названия"
         description = parsed.get("description") or ""
         start_str = parsed.get("start")
