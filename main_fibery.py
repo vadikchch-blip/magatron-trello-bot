@@ -40,6 +40,17 @@ def parse_due_local_msk_to_utc_iso(due_str: str | None) -> str | None:
     """
     if not due_str:
         return None
+        from datetime import timedelta
+
+def make_due2_range(start_local_dt):
+    """start_local_dt — datetime в локальном (МСК) времени"""
+    start_utc = start_local_dt.astimezone(timezone.utc)
+    # Минимальная длительность интервала — 1 минута
+    end_utc = start_utc + timedelta(minutes=int(os.getenv("RANGE_MINUTES", "1")))
+    return {
+        "start": start_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "end":   end_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    }
     dt_local = dp_parse(
         due_str,
         settings={
