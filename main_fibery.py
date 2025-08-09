@@ -1,4 +1,3 @@
-# main_fibery.py  — версия 2025-08-09 (range-aware МСК → UTC)
 import os
 import json
 import logging
@@ -107,9 +106,7 @@ def llm_extract(text: str) -> dict:
     raw = resp["choices"][0]["message"]["content"]
     logging.debug("[DEBUG] GPT RAW: %s", raw)
 
-    # Пытаемся аккуратно распарсить JSON (без eval!)
     data = json.loads(raw)
-    # sanity
     for k in ["title", "description", "start", "end", "labels"]:
         if k not in data:
             data[k] = None if k in ("start", "end") else ("" if k in ("title","description") else [])
@@ -139,9 +136,6 @@ def fibery_graphql(query: str, variables: dict) -> dict:
 
 def create_task_due2(name: str, start_local: datetime, end_local: datetime,
                      chat_id: str, msg_id: str) -> tuple[bool, str]:
-    """
-    Создание задачи с диапазоном due2 (DateRangeInput).
-    """
     variables = {
         "name": name,
         "chatId": str(chat_id),
@@ -172,14 +166,10 @@ def create_task_due2(name: str, start_local: datetime, end_local: datetime,
 
 def create_task_due(name: str, start_local: datetime,
                     chat_id: str, msg_id: str) -> tuple[bool, str]:
-    """
-    Создание задачи с одиночной датой due (String).
-    """
     variables = {
         "name": name,
         "chatId": str(chat_id),
         "msgId": str(msg_id),
-        # due: строка в UTC .000Z (Fibery поле типа String)
         "due": to_utc_z(start_local),
     }
     query = """
@@ -231,10 +221,9 @@ def webhook():
     message_id = msg.get("message_id")
 
     if not text or not chat_id or message_id is None:
-        return "ok"  # не то сообщение
+        return "ok"
 
     try:
-        # 1) парсим LLM
         parsed = llm_extract(text)
         title = (parsed.get("title") or "").strip() or "Без названия"
         description = parsed.get("description") or ""
@@ -248,16 +237,13 @@ def webhook():
             send_telegram(chat_id, "❌ Не понял дату/время. Скажи, например: «завтра в 15:00» или «встреча с 12 до 15».")
             return "ok"
 
-        # 2) Решаем due2 vs due
         use_due2 = (FIBERY_USE_DUE2 == "1")
 
         if use_due2:
-            # если конец отсутствует — делаем дефолтный интервал 1 час
             if end_local is None:
                 end_local = start_local + timedelta(hours=1)
             ok, msg_out = create_task_due2(title, start_local, end_local, chat_id, message_id)
         else:
-            # одиночное поле due
             ok, msg_out = create_task_due(title, start_local, chat_id, message_id)
 
         send_telegram(chat_id, msg_out if ok else (msg_out + " (подробности в логах)"))
@@ -271,5 +257,4 @@ def webhook():
 
     return "ok"
 
-# -------------------- gunicorn entry --------------------
 app = app
