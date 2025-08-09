@@ -155,13 +155,6 @@ def create_task_due2(name: str, start_local: datetime, end_local: datetime,
           }
         }
     """
-
-    res = fibery_graphql(query, variables)
-    if "errors" in res:
-        logging.error("Fibery GraphQL errors: %s", res)
-        return False, "❌ Fibery отклонил due2"
-    return True, "✅ Задача (диапазон) добавлена"
-
     res = fibery_graphql(query, variables)
     if "errors" in res:
         logging.error("Fibery GraphQL errors: %s", res)
@@ -230,74 +223,58 @@ def webhook():
         return "ok"
 
     try:
-parsed = llm_extract(text)
+        parsed = llm_extract(text)
 
-# 1) Собираем offsets напоминаний:
-#    базовые 24ч (1440) и 1ч (60) + пользовательские из LLM (если есть)
-base_offsets = {1440, 60}
-user_offsets = set()
-try:
-    for x in (parsed.get("reminders") or []):
-        v = int(x)
-        if v >= 1:
-            user_offsets.add(v)
-except Exception:
-    pass
-all_offsets = sorted(base_offsets | user_offsets)
-reminder_offsets_str = ",".join(str(x) for x in all_offsets)  # всегда непустая строка
+        # 1) Собираем offsets напоминаний:
+        #    базовые 24ч (1440) и 1ч (60) + пользовательские из LLM (если есть)
+        base_offsets = {1440, 60}
+        user_offsets = set()
+        try:
+            for x in (parsed.get("reminders") or []):
+                v = int(x)
+                if v >= 1:
+                    user_offsets.add(v)
+        except Exception:
+            pass
+        all_offsets = sorted(base_offsets | user_offsets)
+        reminder_offsets_str = ",".join(str(x) for x in all_offsets)  # всегда непустая строка
 
-# 2) Поля задачи
-title = (parsed.get("title") or "").strip() or "Без названия"
-description = parsed.get("description") or ""
-start_str = parsed.get("start")
-end_str   = parsed.get("end")
+        # 2) Поля задачи
+        title = (parsed.get("title") or "").strip() or "Без названия"
+        description = parsed.get("description") or ""
+        start_str = parsed.get("start")
+        end_str   = parsed.get("end")
 
-start_local = parse_llm_iso_local(start_str)
-end_local   = parse_llm_iso_local(end_str) if end_str else None
-
-if start_local is None:
-    send_telegram(chat_id, "❌ Не понял дату/время. Скажи, например: «завтра в 15:00» или «встреча с 12 до 15».")
-    return "ok"
-
-# 3) Выбор поля due/due2
-use_due2 = (FIBERY_USE_DUE2 == "1")
-
-if use_due2:
-    # если диапазон не указан — дефолт 1 час
-    if end_local is None:
-        end_local = start_local + timedelta(hours=1)
-    ok, msg_out = create_task_due2(
-        title,
-        start_local,
-        end_local,
-        chat_id,
-        message_id,
-        reminder_offsets_str
-    )
-else:
-    ok, msg_out = create_task_due(
-        title,
-        start_local,
-        chat_id,
-        message_id,
-        reminder_offsets_str
-    )
-
-send_telegram(chat_id, msg_out if ok else (msg_out + " (подробности в логах)"))
-
+        start_local = parse_llm_iso_local(start_str)
+        end_local   = parse_llm_iso_local(end_str) if end_str else None
 
         if start_local is None:
             send_telegram(chat_id, "❌ Не понял дату/время. Скажи, например: «завтра в 15:00» или «встреча с 12 до 15».")
             return "ok"
 
+        # 3) Выбор поля due/due2
         use_due2 = (FIBERY_USE_DUE2 == "1")
 
         if use_due2:
+            # если диапазон не указан — дефолт 1 час
             if end_local is None:
                 end_local = start_local + timedelta(hours=1)
-            ok, msg_out = create_task_due2(title, start_local, end_local, chat_id, message_id)
+            ok, msg_out = create_task_due2(
+                title,
+                start_local,
+                end_local,
+                chat_id,
+                message_id,
+                reminder_offsets_str
+            )
         else:
-            ok, msg_out = create_task_due(title, start_local, chat_id, message_id)
+            ok, msg_out = create_task_due(
+                title,
+                start_local,
+                chat_id,
+                message_id,
+                reminder_offsets_str
+            )
 
         send_telegram(chat_id, msg_out if ok else (msg_out + " (подробности в логах)"))
 
