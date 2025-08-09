@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import logging
 from datetime import datetime, timedelta
@@ -15,7 +16,7 @@ FIBERY_API_TOKEN   = os.getenv("FIBERY_API_TOKEN", "")
 # Пример: https://magatron-lab.fibery.io/api/graphql/space/Magatron_space
 FIBERY_API_URL     = os.getenv("FIBERY_API_URL", "")
 
-# "1" → всегда писать в due2 (диапазон). Иначе — одиночное поле due (строка).
+# "1" → писать в due2 (DateRangeInput), иначе — due (String)
 FIBERY_USE_DUE2    = os.getenv("FIBERY_USE_DUE2", "1")
 
 # Таймзона пользователя (по умолчанию МСК)
@@ -31,21 +32,15 @@ def now_in_user_tz() -> datetime:
     return datetime.now(ZoneInfo(USER_TZ)).replace(microsecond=0)
 
 def local_iso(dt: datetime) -> str:
-    """YYYY-MM-DDTHH:MM:SS в локальной TZ (без Z)."""
     return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
 def to_utc_z(dt_local: datetime) -> str:
-    """Локальное (aware) → UTC .000Z"""
     if dt_local.tzinfo is None:
         dt_local = dt_local.replace(tzinfo=ZoneInfo(USER_TZ))
     dt_utc = dt_local.astimezone(ZoneInfo("UTC"))
     return dt_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 def parse_llm_iso_local(s: str) -> datetime | None:
-    """
-    Ждём строку вида YYYY-MM-DDTHH:MM:SS (ЛОКАЛЬНОЕ МСК),
-    как мы просим в промпте. Возвращаем aware (МСК).
-    """
     if not s:
         return None
     try:
@@ -54,18 +49,18 @@ def parse_llm_iso_local(s: str) -> datetime | None:
     except Exception:
         return None
 
-# -------------------- LLM парсер запроса --------------------
+# -------------------- LLM парсер --------------------
 SYSTEM_PROMPT = (
     "Ты помощник по задачам. Верни СТРОГИЙ JSON без пояснений.\n"
     "Нужно извлечь:\n"
     "  - title (строка)\n"
     "  - description (строка, можно пустую)\n"
-    "  - start (строка в формате YYYY-MM-DDTHH:MM:SS — ЛОКАЛЬНОЕ московское время) или null\n"
-    "  - end (строка в том же формате; если в тексте указан диапазон «с … до …», иначе null)\n"
+    "  - start (строка YYYY-MM-DDTHH:MM:SS — локальное московское время) или null\n"
+    "  - end (строка в том же формате; если указан диапазон «с … до …», иначе null)\n"
     "  - labels (массив строк)\n"
-    "  - reminders (массив целых минут-оффсетов до начала: например [1440, 60, 15]; если пользователь сказал «напомни за 2 часа и за 10 минут», то [120, 10]; если не просил — пустой массив)\n"
-    "Если указан только один момент времени (например, «завтра в 15:00»), заполни start, а end верни null.\n"
-    "Верни ТОЛЬКО JSON вида:\n"
+    "  - reminders (массив минут до начала, напр. [1440,60,15]; если не просили — [])\n"
+    "Если указан один момент («завтра в 15:00») — заполни start, а end верни null.\n"
+    "Верни ТОЛЬКО JSON:\n"
     "{\n"
     '  "title": "…",\n'
     '  "description": "…",\n'
@@ -77,16 +72,8 @@ SYSTEM_PROMPT = (
 )
 
 def llm_extract(text: str) -> dict:
-    """
-    Вызывает Chat Completions (openai==0.28 стиль) и возвращает dict:
-    { title, description, start, end, labels }
-    """
     now_local = local_iso(now_in_user_tz())
-    user_prompt = (
-        f"Сегодня (МСК): {now_local}\n\n"
-        f"Задача: {text}\n\n"
-        "Верни только JSON."
-    )
+    user_prompt = f"Сегодня (МСК): {now_local}\n\nЗадача: {text}\n\nВерни только JSON."
 
     logging.debug("[DEBUG] LLM prompt now_local=%s", now_local)
 
@@ -102,14 +89,24 @@ def llm_extract(text: str) -> dict:
     logging.debug("[DEBUG] GPT RAW: %s", raw)
 
     data = json.loads(raw)
-    for k in ["title", "description", "start", "end", "labels"]:
+    # sanity
+    for k in ["title", "description", "start", "end", "labels", "reminders"]:
         if k not in data:
-            data[k] = None if k in ("start", "end") else ("" if k in ("title","description") else [])
+            if k in ("start", "end"):
+                data[k] = None
+            elif k == "labels":
+                data[k] = []
+            elif k == "reminders":
+                data[k] = []
+            else:
+                data[k] = ""
     if data.get("labels") is None:
         data["labels"] = []
+    if data.get("reminders") is None:
+        data["reminders"] = []
     return data
 
-# -------------------- GraphQL --------------------
+# -------------------- Fibery GraphQL --------------------
 def fibery_graphql(query: str, variables: dict) -> dict:
     headers = {
         "Authorization": f"Token {FIBERY_API_TOKEN}",
@@ -129,6 +126,7 @@ def fibery_graphql(query: str, variables: dict) -> dict:
     logging.debug("[DEBUG] ⇦ Fibery response:\n%s", json.dumps(data, ensure_ascii=False, indent=2))
     return data
 
+# ---- create (due2)
 def create_task_due2(name: str, start_local: datetime, end_local: datetime,
                      chat_id: str, msg_id: str, reminder_offsets_str: str) -> tuple[bool, str]:
     variables = {
@@ -161,6 +159,7 @@ def create_task_due2(name: str, start_local: datetime, end_local: datetime,
         return False, "❌ Fibery отклонил due2"
     return True, "✅ Задача (диапазон) добавлена"
 
+# ---- create (due)
 def create_task_due(name: str, start_local: datetime,
                     chat_id: str, msg_id: str, reminder_offsets_str: str) -> tuple[bool, str]:
     variables = {
@@ -190,13 +189,61 @@ def create_task_due(name: str, start_local: datetime,
         return False, "❌ Fibery отклонил due"
     return True, "✅ Задача добавлена"
 
+# ---- list (по chatId, незавершённые, последние 10)
+def list_tasks_for_chat(chat_id: str, limit: int = 10) -> list[dict]:
+    variables = {
+        "chatId": str(chat_id),
+        "limit": limit
+    }
+    query = """
+        query($chatId: String!, $limit: Int!) {
+          findTasks(
+            orderBy: { creationDate: { order: DESC } }
+            limit: $limit
+            completed: { is: false }
+            telegramChatId: { contains: $chatId }
+          ) {
+            publicId
+            name
+            completed
+            due
+            due2 { start end }
+            creationDate
+          }
+        }
+    """
+    res = fibery_graphql(query, variables)
+    if "errors" in res:
+        logging.error("Fibery GraphQL errors: %s", res)
+        return []
+    return res.get("data", {}).get("findTasks", []) or []
+
+# ---- done (по Public Id)
+def mark_done_by_public_id(pid: str, ts_utc: str) -> tuple[bool, str]:
+    variables = {"pid": pid, "ts": ts_utc}
+    query = """
+        mutation MarkDone($pid: String!, $ts: String!) {
+          tasks(publicId: { is: $pid }) {
+            update(
+              completed: true
+              completedAt: $ts
+            ) { message }
+          }
+        }
+    """
+    res = fibery_graphql(query, variables)
+    if "errors" in res:
+        logging.error("Fibery GraphQL errors: %s", res)
+        return False, "❌ Не удалось отметить как выполнено"
+    return True, "✅ Отмечено как выполнено"
+
 # -------------------- Telegram --------------------
 def send_telegram(chat_id: int | str, text: str):
     if not TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN пуст, не могу отправить сообщение")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     try:
         r = requests.post(url, json=payload, timeout=15)
         r.raise_for_status()
@@ -214,7 +261,7 @@ def webhook():
     logging.debug("[DEBUG] Входящее сообщение: %s", data)
 
     msg = data.get("message") or {}
-    text = msg.get("text")
+    text = (msg.get("text") or "").strip()
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     message_id = msg.get("message_id")
@@ -222,11 +269,42 @@ def webhook():
     if not text or not chat_id or message_id is None:
         return "ok"
 
+    # --- ветка “готово <pid>” / “done <pid>”
+    m = re.match(r"^(?:готово|done)\s+(\d+)$", text, flags=re.IGNORECASE)
+    if m:
+        pid = m.group(1)
+        now_utc = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        ok, msg_out = mark_done_by_public_id(pid, now_utc)
+        send_telegram(chat_id, f"{msg_out} (task #{pid})" if ok else msg_out)
+        return "ok"
+
+    # --- ветка “список”
+    if re.match(r"^(список|list)\b", text, flags=re.IGNORECASE):
+        items = list_tasks_for_chat(str(chat_id), limit=10)
+        if not items:
+            send_telegram(chat_id, "Задач не найдено ✨")
+            return "ok"
+        lines = ["<b>Твои незавершённые задачи (последние 10):</b>"]
+        for t in items:
+            pid = t.get("publicId", "?")
+            name = t.get("name") or "Без названия"
+            due = t.get("due")
+            due2 = t.get("due2")
+            if due2 and due2.get("start"):
+                lines.append(f"• #{pid} — {name}\n    due2: {due2['start']} → {due2.get('end')}")
+            elif due:
+                lines.append(f"• #{pid} — {name}\n    due:  {due}")
+            else:
+                lines.append(f"• #{pid} — {name}")
+        lines.append("\nЧтобы закрыть: <code>готово N</code> (пример: готово 29)")
+        send_telegram(chat_id, "\n".join(lines))
+        return "ok"
+
+    # --- обычное создание задачи
     try:
         parsed = llm_extract(text)
 
-        # 1) Собираем offsets напоминаний:
-        #    базовые 24ч (1440) и 1ч (60) + пользовательские из LLM (если есть)
+        # 1) offsets напоминаний: базовые 1440 и 60 + пользовательские
         base_offsets = {1440, 60}
         user_offsets = set()
         try:
@@ -239,7 +317,7 @@ def webhook():
         all_offsets = sorted(base_offsets | user_offsets)
         reminder_offsets_str = ",".join(str(x) for x in all_offsets)  # всегда непустая строка
 
-        # 2) Поля задачи
+        # 2) поля
         title = (parsed.get("title") or "").strip() or "Без названия"
         description = parsed.get("description") or ""
         start_str = parsed.get("start")
@@ -252,29 +330,14 @@ def webhook():
             send_telegram(chat_id, "❌ Не понял дату/время. Скажи, например: «завтра в 15:00» или «встреча с 12 до 15».")
             return "ok"
 
-        # 3) Выбор поля due/due2
+        # 3) due/due2
         use_due2 = (FIBERY_USE_DUE2 == "1")
-
         if use_due2:
-            # если диапазон не указан — дефолт 1 час
             if end_local is None:
                 end_local = start_local + timedelta(hours=1)
-            ok, msg_out = create_task_due2(
-                title,
-                start_local,
-                end_local,
-                chat_id,
-                message_id,
-                reminder_offsets_str
-            )
+            ok, msg_out = create_task_due2(title, start_local, end_local, chat_id, message_id, reminder_offsets_str)
         else:
-            ok, msg_out = create_task_due(
-                title,
-                start_local,
-                chat_id,
-                message_id,
-                reminder_offsets_str
-            )
+            ok, msg_out = create_task_due(title, start_local, chat_id, message_id, reminder_offsets_str)
 
         send_telegram(chat_id, msg_out if ok else (msg_out + " (подробности в логах)"))
 
@@ -287,4 +350,5 @@ def webhook():
 
     return "ok"
 
+# -------------------- gunicorn entry --------------------
 app = app
